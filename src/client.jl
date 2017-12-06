@@ -54,6 +54,19 @@ struct User
     password::String
 end
 
+"""
+Use the mutable struct Client to create an instance. Client consists of:
+- a callback function on_msg to determine when a PUBLISH message is received from the server.
+  Callbacks such as on_msg are used as it allows the data to be returned from the broker
+- keep_alive is the grace period allowed between the data transfer with the broker. It's stored in seconds
+- last_id is used in the packet_id function to determine the final id of the existing packets
+- inflight uses a Dict to construct a hash table with keys of type UInt16 and Future.
+  It is used to set the max number of messages coming through the broker with QoS>0
+- write_packets uses a channel to pass data i.e. Packet
+  between running tasks through read and write via a concurrent flow
+- socket and socket_lock for writing and reading functions
+- ping_timeout is used to disconnect after waiting for a pingresp
+"""
 mutable struct Client
     on_msg::Function
     keep_alive::UInt16
@@ -73,6 +86,7 @@ mutable struct Client
     last_sent::Atomic{Float64}
     last_received::Atomic{Float64}
 
+    '''consuming all the attributes implemented'''
     Client(on_msg) = new(
     on_msg,
     0x0000,
@@ -94,6 +108,7 @@ const CONNACK_ERRORS = Dict{UInt8, String}(
 0x04 => "connection refused bad user name or password",
 0x05 => "connection refused not authorized",
 )
+
 
 function handle_connack(client::Client, s::IO, cmd::UInt8, flags::UInt8)
     session_present = read(s, UInt8)
@@ -304,6 +319,9 @@ function get(future)
 end
 
 #TODO change keep_alive to Int64 and convert ourselves
+'''
+
+'''
 function connect_async(client::Client, host::AbstractString, port::Integer=1883;
     keep_alive::UInt16=0x0000,
     client_id::String=randstring(8),
