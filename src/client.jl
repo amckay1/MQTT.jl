@@ -66,6 +66,7 @@ Use the mutable struct Client to create an instance. Client consists of:
   between running tasks through read and write via a concurrent flow
 - socket and socket_lock for writing and reading functions
 - ping_timeout is used to disconnect after waiting for a pingresp
+- ping_outstanding
 """
 mutable struct Client
     on_msg::Function
@@ -405,7 +406,7 @@ function publish_async(client::Client, message::Message)
     if message.qos == 0x00
         put!(future, 0)
     elseif message.qos == 0x01 || message.qos == 0x02
-        future = Future()
+        future =    Future()
         id = packet_id(client)
         client.in_flight[id] = future
         optional = (id)
