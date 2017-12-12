@@ -59,8 +59,37 @@ Client(on_msg::Function, ping_timeout::UInt64)
 ```
 
 ## Publish
+After a MQTT client is connected to a broker, it can publish messages.  
+```julia
+publish(client::Client, topic::String, payload...; dup::Bool=false, qos::UInt8=0x00, retain::Bool=false
+```
+Once the broker receives the message from the publish function above, it will then send the message to any clients subscribing to matching topics. Publish consists of these arguments:
 
-## Subscribe
+* client: connect to the MQTT client
+* topic: the message should be pubished on
+* payload: the actual message to be sent
+* dup: The duplicate (DUP) flag, which is set in the case a PUBLISH is redelivered, is only for internal purposes and won’t be processed by broker or client in the case of QoS 1. The receiver will send a PUBACK regardless of the DUP flag.
+* qos: the quality of service level to use
+* retain: A retained message is an MQTT message with the retained flag set to true. If set to True, the message will be set as the "last known good"/retained message for the topic.
+  
+The function `publish_async` is used so it can be consumed by `publish`.
+Distinguished by qos, the `message` is sorted and subsequently `write_packet` prepares the packet to be published.
+
+## Subscribe / Unsubscribe
+Subscribe to a topic and receive messages.
 
 ```julia
+subscribe(client, topics...)
 ```
+* client: connect to the MQTT client
+* topic: a string for the client to subscribe to
+
+
+Unsubscribe the client from one or more topics.
+
+```julia
+unsubscribe(client, topics...)
+```
+* topic: a single string, or list of strings that are the subscription topics to unsubscribe from.
+
+Just like Publish, Subscribe/ Unsubscribe also uses `subscribe_async`and `unsubscribe_async` for the same reason.
