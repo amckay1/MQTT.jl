@@ -1,4 +1,4 @@
-# commands
+# commands / message types
 const CONNECT = 0x10
 const CONNACK = 0x20
 const PUBLISH = 0x30
@@ -53,7 +53,6 @@ struct User
     name::String
     password::String
 end
-
 """
 Use the mutable struct Client to create an instance. Client consists of:
 - a callback function on_msg to determine when a PUBLISH message is received from the server.
@@ -66,7 +65,6 @@ Use the mutable struct Client to create an instance. Client consists of:
   between running tasks through read and write via a concurrent flow
 - socket and socket_lock for writing and reading functions
 - ping_timeout is used to disconnect after waiting for a pingresp
-- ping_outstanding
 """
 mutable struct Client
     on_msg::Function
@@ -74,25 +72,44 @@ mutable struct Client
 
     # TODO mutex?
     last_id::UInt16
+    #Future(pid:Integer=myid())
+    #Create a future on process pid. The default pid is the current process
+    """
+    in_flight Set the number of messages with QoS>0 that
+    can be part way through their network flow at once.
+    Defaults to 20. Increasing this value will
+    consume more memory but can increase throughput.
+    """
     in_flight::Dict{UInt16, Future}
-
+    #Dict{K,V}() constructs a hash table with keys of type K and values of type V.
     write_packets::Channel{Packet}
     socket
     socket_lock
-
+    #waiting for a PINGRESP
     ping_timeout::UInt64
 
     # TODO mutex
+
+    """
+    Holds a reference to an object of type T,
+    ensuring that it is only accessed atomically,
+    i.e. in a thread-safe manner.
+
+    Only certain "simple" types can be used atomically,
+    namely the primitive integer and float-point types.
+    These are Int8...Int128, UInt8...UInt128, and Float16...Float64.
+    """
     ping_outstanding::Atomic{UInt8}
     last_sent::Atomic{Float64}
     last_received::Atomic{Float64}
 
-    '''consuming all the attributes implemented'''
-    Client(on_msg) = new(
+    #consuming all the attributes implemented
+    Client(on_msg::Function) = new(
     on_msg,
     0x0000,
     0x0000,
     Dict{UInt16, Future}(),
+    #constructs a channel with an internal buffer
     Channel{Packet}(60),
     TCPSocket(),
     ReentrantLock(),
@@ -100,8 +117,23 @@ mutable struct Client
     Atomic{UInt8}(0),
     Atomic{Float64}(),
     Atomic{Float64}())
+
+    #Specify a custom ping_timeout
+    Client(on_msg::Function, ping_timeout::UInt64) = new(
+    on_msg,
+    0x0000,
+    0x0000,
+    Dict{UInt16, Future}(),
+    Channel{Packet}(60),
+    TCPSocket(),
+    ReentrantLock(),
+    ping_timeout,
+    Atomic{UInt8}(0),
+    Atomic{Float64}(),
+    Atomic{Float64}())
 end
 
+#error messages
 const CONNACK_ERRORS = Dict{UInt8, String}(
 0x01 => "connection refused unacceptable protocol version",
 0x02 => "connection refused identifier rejected",
@@ -110,6 +142,7 @@ const CONNACK_ERRORS = Dict{UInt8, String}(
 0x05 => "connection refused not authorized",
 )
 
+# a handle is an abstract reference to a resource
 
 function handle_connack(client::Client, s::IO, cmd::UInt8, flags::UInt8)
     session_present = read(s, UInt8)
@@ -123,6 +156,8 @@ function handle_connack(client::Client, s::IO, cmd::UInt8, flags::UInt8)
         put!(future, MQTTException(error))
     end
 end
+
+
 
 function handle_publish(client::Client, s::IO, cmd::UInt8, flags::UInt8)
     dup = (flags & 0x08) >> 3
@@ -147,7 +182,9 @@ end
 
 function handle_ack(client::Client, s::IO, cmd::UInt8, flags::UInt8)
     id = mqtt_read(s, UInt16)
+
     # TODO move this to its own function
+
     if haskey(client.in_flight, id)
         future = client.in_flight[id]
         put!(future, nothing)
@@ -320,11 +357,31 @@ function get(future)
 end
 
 #TODO change keep_alive to Int64 and convert ourselves
-'''
 
-'''
+"""
+        clean_session is a boolean that determines the client type. If True,
+        the broker will remove all information about this client when it
+        disconnects. If False, the client is a persistent client and
+        subscription information and queued messages will be retained when the
+        client disconnects.
+
+        connect_async:
+        Connect to a remote broker asynchronously. This is a non-blocking
+        connect call that can be used with loop_start() to provide very quick
+        start.
+
+        host is the hostname or IP address of the remote broker.
+        port is the network port of the server host to connect to. Defaults to
+        1883.
+        keepalive: Maximum period in seconds between communications with the
+        broker. If no other messages are being exchanged, this controls the
+        rate at which the client will send ping messages to the broker.
+
+"""
+
 function connect_async(client::Client, host::AbstractString, port::Integer=1883;
     keep_alive::UInt16=0x0000,
+    #client_id - unique client id string used when connecting to the broker.
     client_id::String=randstring(8),
     user::User=User("", ""),
     will::Message=Message(false, 0x00, false, "", Array{UInt8}()),
@@ -366,6 +423,16 @@ function connect_async(client::Client, host::AbstractString, port::Integer=1883;
     return future
 end
 
+"""     Connect to a remote broker.
+
+        host is the hostname or IP address of the remote broker.
+        port is the network port of the server host to connect to. Defaults to
+        1883. Note that the default port for MQTT over SSL/TLS is 8883 so if you
+        are using tls_set() the port may need providing.
+        keepalive: Maximum period in seconds between communications with the
+        broker. If no other messages are being exchanged, this controls the
+        rate at which the client will send ping messages to the broker.
+        """
 connect(client::Client, host::AbstractString, port::Integer=1883;
 keep_alive::UInt16=0x0000,
 client_id::String=randstring(8),
@@ -373,11 +440,13 @@ user::User=User("", ""),
 will::Message=Message(false, 0x00, false, "", Array{UInt8}()),
 clean_session::Bool=true) = get(connect_async(client, host, port, keep_alive=keep_alive, client_id=client_id, user=user, will=will, clean_session=clean_session))
 
+#Disconnect a connected client from the broker.
 function disconnect(client)
     write_packet(client, DISCONNECT)
     close(client.write_packets)
     wait(client.socket.closenotify)
 end
+
 
 # TODO change topics to Tuple{String, UInt8}
 function subscribe_async(client, topics...)
@@ -388,8 +457,10 @@ function subscribe_async(client, topics...)
     return future
 end
 
+#Subscribe the client to one or more topics.
 subscribe(client, topics...) = get(subscribe_async(client, topics...))
 
+#Unsubscribe the client from one or more topics
 function unsubscribe_async(client, topics...)
     future = Future()
     id = packet_id(client)
@@ -397,7 +468,7 @@ function unsubscribe_async(client, topics...)
     write_packet(client, UNSUBSCRIBE | 0x02, id, topics...)
     return future
 end
-
+#"Unsubscribe the client from one or more topics
 unsubscribe(client, topics...) = get(unsubscribe_async(client, topics...))
 
 function publish_async(client::Client, message::Message)
@@ -406,7 +477,7 @@ function publish_async(client::Client, message::Message)
     if message.qos == 0x00
         put!(future, 0)
     elseif message.qos == 0x01 || message.qos == 0x02
-        future =    Future()
+        future = Future()
         id = packet_id(client)
         client.in_flight[id] = future
         optional = (id)
@@ -423,6 +494,15 @@ publish_async(client::Client, topic::String, payload...;
     qos::UInt8=0x00,
     retain::Bool=false) = publish_async(client, Message(dup, qos, retain, topic, payload...))
 
+    """     Publishes a message on a topic.
+
+            This causes a message to be sent to the broker and subsequently from
+            the broker to any clients subscribing to matching topics.
+
+            topic: The topic that the message should be published on.
+            payload: The actual message to send. If not given, or set to None a
+            zero length message will be used.
+    """
 publish(client::Client, topic::String, payload...;
     dup::Bool=false,
     qos::UInt8=0x00,
