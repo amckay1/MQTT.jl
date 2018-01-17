@@ -373,7 +373,17 @@ function get(future)
     return r
 end
 
-#TODO change keep_alive to Int64 and convert ourselves
+"""
+    connect_async(client::Client, host::AbstractString, port::Integer=1883;
+    keep_alive::UInt16=0x0000,
+    client_id::String=randstring(8),
+    user::User=User("", ""),
+    will::Message=Message(false, 0x00, false, "", Array{UInt8}()),
+    clean_session::Bool=true)
+
+Connects the `Client` instance to the specified broker. 
+Returns a `Future` object that contains a session_present bit from the broker on success and an exception on failure.
+"""
 function connect_async(client::Client, host::AbstractString, port::Integer=1883;
     keep_alive::UInt16=0x0000,
     client_id::String=randstring(8),
@@ -417,6 +427,17 @@ function connect_async(client::Client, host::AbstractString, port::Integer=1883;
     return future
 end
 
+"""
+    connect(client::Client, host::AbstractString, port::Integer=1883;
+	keep_alive::UInt16=0x0000,
+	client_id::String=randstring(8),
+	user::User=User("", ""),
+	will::Message=Message(false, 0x00, false, "", Array{UInt8}()),
+	clean_session::Bool=true)
+
+Connects the `Client` instance to the specified broker. 
+Returns the session_present bit from the broker on success and an exception on failure.
+"""
 connect(client::Client, host::AbstractString, port::Integer=1883;
 keep_alive::UInt16=0x0000,
 client_id::String=randstring(8),
