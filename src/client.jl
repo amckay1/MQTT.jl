@@ -77,7 +77,7 @@ mutable struct Client
 
     write_packets::Channel{Packet}
     socket
-    socket_lock # TODO add type
+    socket_lock::ReentrantLock
 
     ping_timeout::UInt64
 
@@ -85,6 +85,10 @@ mutable struct Client
     ping_outstanding::Atomic{UInt8}
     last_sent::Atomic{Float64}
     last_received::Atomic{Float64}
+
+    exit_flag::Bool
+    disconnect_ready::Bool
+    disconnect_ready_cond::Condition
 
     Client(on_msg::Function) = new(
     on_msg,
@@ -97,7 +101,10 @@ mutable struct Client
     60,
     Atomic{UInt8}(0),
     Atomic{Float64}(),
-    Atomic{Float64}())
+    Atomic{Float64}(),
+    false,
+    true,
+    Condition())
 
     Client(on_msg::Function, ping_timeout::UInt64) = new(
     on_msg,
@@ -110,7 +117,10 @@ mutable struct Client
     ping_timeout,
     Atomic{UInt8}(0),
     Atomic{Float64}(),
-    Atomic{Float64}())
+    Atomic{Float64}(),
+    false,
+    true,
+    Condition())
 end
 
 
@@ -217,8 +227,8 @@ end
 
 function write_loop(client)
     try
-        while true
-            packet = take!(client.write_packets)
+        while isopen(client.socket)
+            packet = take_write_packets!(client)
             buffer = PipeBuffer()
             for i in packet.data
                 mqtt_write(buffer, i)
@@ -243,7 +253,7 @@ end
 
 function read_loop(client)
     try
-        while true
+        while isopen(client.socket)
             cmd_flags = read(client.socket, UInt8)
             len = read_len(client.socket)
             data = read(client.socket, len)
@@ -276,7 +286,7 @@ function keep_alive_loop(client::Client)
     end
     timer = Timer(0, check_interval)
 
-    while true
+    while isopen(client.socket)
       if time() - client.last_sent[] >= client.keep_alive || time() - client.last_received[] >= client.keep_alive
         if client.ping_outstanding[] == 0x0
           atomic_xchg!(client.ping_outstanding, 0x1)
@@ -317,8 +327,40 @@ function keep_alive_loop(client::Client)
     end
 end
 
-function write_packet(client::Client, cmd::UInt8, data...)
-    put!(client.write_packets, Packet(cmd, data))
+function unlock_disconnect_ready(client::Client)
+    if length(client.in_flight) == 0 && !isready(client.write_packets)
+        client.disconnect_ready = true
+        notify(client.disconnect_ready_cond)
+    end
+end
+
+function lock_disconnect_ready(client::Client)
+    client.disconnect_ready = false
+end
+
+function delete_in_flight!(client::Client, mid::UInt16)
+    delete!(client.in_flight, mid)
+    unlock_disconnect_ready(client)
+end
+
+function put_in_flight!(client::Client, mid::UInt16, future::Future)
+    client.in_flight[mid] = future
+    lock_disconnect_ready(client)
+end
+
+function put_write_packets!(client::Client, packet::Packet)
+    put!(client.write_packets, packet)
+    lock_disconnect_ready(client)
+end
+
+function take_write_packets!(client::Client)
+    packet = take!(client.write_packets)
+    unlock_disconnect_ready(client)
+    return packet
+end 
+
+function write_packet(client::Client, cmd::UInt8, data...)  
+    put_write_packets!(client, Packet(cmd, data))
 end
 
 # the docs make it sound like fetch would alrdy work in this way
@@ -362,7 +404,7 @@ function connect_async(client::Client, host::AbstractString, port::Integer=1883;
     end
 
     future = Future()
-    client.in_flight[0x0000] = future
+    put_in_flight!(client, 0x0000, future)
 
     write_packet(client, CONNECT,
     protocol_name,
@@ -383,16 +425,35 @@ will::Message=Message(false, 0x00, false, "", Array{UInt8}()),
 clean_session::Bool=true) = get(connect_async(client, host, port, keep_alive=keep_alive, client_id=client_id, user=user, will=will, clean_session=clean_session))
 
 function disconnect(client::Client)
+    client.exit_flag = true
+    #confirmed_finish = false
+    #TODO check if we can verify that there certainly won't be another input packet
+    #while !confirmed_finish
+        if client.disconnect_ready == false
+            println("1")
+            wait(client.disconnect_ready_cond)
+        end
+    #end
+    println("2")
     write_packet(client, DISCONNECT)
+    #TODO sleep?
+        if client.disconnect_ready == false
+            wait(client.disconnect_ready_cond)
+        end
     close(client.write_packets)
-    wait(client.socket.closenotify)
+    close(client.socket)
+    #wait(client.socket.closenotify)
 end
 
 # TODO change topics to Tuple{String, UInt8}
 function subscribe_async(client::Client, topics::Tuple{String, QOS}...)
+    if client.exit_flag
+        throw(InvalidStateException("Client is disconnected"))
+    end
+
     future = Future()
     id = packet_id(client)
-    client.in_flight[id] = future
+    put_in_flight!(client, id, future)
     topic_data = []
     for t in topics
         for data in t
@@ -406,9 +467,13 @@ end
 subscribe(client::Client, topics::Tuple{String, QOS}...) = get(subscribe_async(client, topics...))
 
 function unsubscribe_async(client::Client, topics::String...)
+    if client.exit_flag
+        throw(InvalidStateException("Client is disconnected"))
+    end
+
     future = Future()
     id = packet_id(client)
-    client.in_flight[id] = future
+    put_in_flight!(client, id, future)
     topic_data = []
     write_packet(client, UNSUBSCRIBE | 0x02, id, topics...)
     return future
@@ -417,6 +482,10 @@ end
 unsubscribe(client::Client, topics::String...) = get(unsubscribe_async(client, topics...))
 
 function publish_async(client::Client, message::Message)
+    if client.exit_flag
+        throw(InvalidStateException("Client is disconnected"))
+    end
+
     future = Future()
     optional = ()
     if message.qos == 0x00
@@ -424,7 +493,7 @@ function publish_async(client::Client, message::Message)
     elseif message.qos == 0x01 || message.qos == 0x02
         future = Future()
         id = packet_id(client)
-        client.in_flight[id] = future
+        put_in_flight!(client, id, future)
         optional = (id)
     else
         throw(MQTTException("invalid qos"))
