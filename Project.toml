@@ -1,6 +1,6 @@
 name = "MQTT"
 uuid = "e0edc225-5d1b-4b20-8637-fb30adf29425"
-authors = ["Torbjørn Hergum <torbjorn@hergum.no>"]
+authors = ["AlexanderRohde <rohde.alx@gmail.com>"]
 version = "0.1.0"
 
 [deps]
