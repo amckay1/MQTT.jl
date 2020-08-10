@@ -442,7 +442,7 @@ Disconnects the client from the broker and stops the tasks.
 function disconnect(client::Client)
     write_packet(client, DISCONNECT)
     close(client.write_packets)
-    wait(client.socket.closenotify)
+#   wait(client.socket.closenotify)
 end
 
 """
