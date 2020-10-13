@@ -1,10 +1,10 @@
 using MQTT
 
-broker = "test.mosquitto.org"
+broker = "192.168.0.13"
 
 #Define the callback for receiving messages.
 function on_msg(topic, payload)
-    info("Received message topic: [", topic, "] payload: [", String(payload), "]")
+    println("Received message topic: $topic, payload: $(String(payload))")
 end
 
 #Instantiate a client.
